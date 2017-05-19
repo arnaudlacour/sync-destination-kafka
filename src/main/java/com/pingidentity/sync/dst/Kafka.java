@@ -1,13 +1,16 @@
 package com.pingidentity.sync.dst;
 
 import com.google.gson.Gson;
+import com.unboundid.directory.sdk.common.api.MonitorProvider;
 import com.unboundid.directory.sdk.common.internal.Reconfigurable;
+import com.unboundid.directory.sdk.common.types.RegisteredMonitorProvider;
 import com.unboundid.directory.sdk.sync.api.SyncDestination;
 import com.unboundid.directory.sdk.sync.config.SyncDestinationConfig;
 import com.unboundid.directory.sdk.sync.types.EndpointException;
 import com.unboundid.directory.sdk.sync.types.PostStepResult;
 import com.unboundid.directory.sdk.sync.types.SyncOperation;
 import com.unboundid.directory.sdk.sync.types.SyncServerContext;
+import com.unboundid.ldap.sdk.Attribute;
 import com.unboundid.ldap.sdk.Entry;
 import com.unboundid.ldap.sdk.Modification;
 import com.unboundid.ldap.sdk.ResultCode;
@@ -21,14 +24,16 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  *
  * This extension provides a fairly generic way to publish changes to Kafka
  *
  */
-public class Kafka extends SyncDestination implements Reconfigurable<SyncDestinationConfig>
+public class Kafka extends SyncDestination implements  Reconfigurable<SyncDestinationConfig>
 {
+    
     private static final String ARG_NAME_PROPERTIES = "kafka-properties-file";
     private static final String ARG_NAME_TOPIC = "kafka-topic";
     
@@ -38,6 +43,12 @@ public class Kafka extends SyncDestination implements Reconfigurable<SyncDestina
     private KafkaProducer<String,String> kafkaProducer;
     private Gson gson;
     private String kafkaTopic;
+    
+    AtomicLong numberOfCreates = new AtomicLong(0L);
+    AtomicLong numberOfModifies = new AtomicLong(0L);
+    AtomicLong numberOfDeletes = new AtomicLong(0L);
+    private RegisteredMonitorProvider internalMonitor;
+    
     
     /**
      *  Provide a string describing this extension succinctly
@@ -117,6 +128,46 @@ public class Kafka extends SyncDestination implements Reconfigurable<SyncDestina
     
     }
     
+    
+    class MyMonitor extends MonitorProvider
+    {
+        @Override
+        public String getExtensionName()
+        {
+            return "Internal Monitor";
+        }
+    
+        @Override
+        public String[] getExtensionDescription()
+        {
+            return new String[]{};
+        }
+    
+        /**
+         * Build a string to display in cn=monitor
+         *
+         * @return the name of the cn=monitor entry
+         */
+        @Override
+        public String getMonitorInstanceName()
+        {
+            return "Kafka Sync Desination " + kafkaTopic;
+        }
+    
+        /**
+         * @return
+         */
+        @Override
+        public List<Attribute> getMonitorAttributes()
+        {
+            List<Attribute> result = new ArrayList<>();
+            result.add(new Attribute("number-of-creates", numberOfCreates.toString()));
+            result.add(new Attribute("number-of-modifies", numberOfModifies.toString()));
+            result.add(new Attribute("number-of-deletes", numberOfDeletes.toString()));
+            return result;
+        }
+    }
+    
     /**
      * Performs all processing required to initialize the extension
      *
@@ -133,6 +184,8 @@ public class Kafka extends SyncDestination implements Reconfigurable<SyncDestina
         this.serverContext = serverContext;
         this.config = config;
         gson = new Gson();
+        
+        internalMonitor = serverContext.registerMonitorProvider(new MyMonitor(),config);
     
         List<String> actions = new ArrayList<>();
         List<String> messages = new ArrayList<>();
@@ -150,6 +203,7 @@ public class Kafka extends SyncDestination implements Reconfigurable<SyncDestina
     public void finalizeSyncDestination()
     {
         kafkaProducer.close();
+        serverContext.deregisterMonitorProvider(internalMonitor);
     }
     
     /**
@@ -173,6 +227,7 @@ public class Kafka extends SyncDestination implements Reconfigurable<SyncDestina
     public void createEntry(Entry entry, SyncOperation syncOperation) throws EndpointException
     {
         kafkaProducer.send(buildProducerRecord("ADD",entry,syncOperation));
+        numberOfCreates.getAndIncrement();
     }
     
     /**
@@ -187,6 +242,7 @@ public class Kafka extends SyncDestination implements Reconfigurable<SyncDestina
     public void modifyEntry(Entry entry, List<Modification> list, SyncOperation syncOperation) throws EndpointException
     {
         kafkaProducer.send(buildProducerRecord("MOD",entry,syncOperation));
+        numberOfModifies.getAndIncrement();
     }
     
     /**
@@ -200,6 +256,7 @@ public class Kafka extends SyncDestination implements Reconfigurable<SyncDestina
     public void deleteEntry(Entry entry, SyncOperation syncOperation) throws EndpointException
     {
         kafkaProducer.send(buildProducerRecord("REM",entry,syncOperation));
+        numberOfDeletes.getAndIncrement();
     }
     
     /**
