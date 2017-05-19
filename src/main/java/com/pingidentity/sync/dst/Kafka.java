@@ -241,7 +241,7 @@ public class Kafka extends SyncDestination implements  Reconfigurable<SyncDestin
     @Override
     public void modifyEntry(Entry entry, List<Modification> list, SyncOperation syncOperation) throws EndpointException
     {
-        kafkaProducer.send(buildProducerRecord("MOD",entry,syncOperation));
+        kafkaProducer.send(buildProducerRecord("MOD"+(syncOperation.isModifyDN()?"DN":""),entry,syncOperation));
         numberOfModifies.getAndIncrement();
     }
     
